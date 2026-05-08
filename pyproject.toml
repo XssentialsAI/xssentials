@@ -1,0 +1,16 @@
+[project]
+name = "xssentials"
+version = "0.1.0"
+description = "Xssentials internal API wrappers (ConnectWise Manage, etc.)"
+requires-python = ">=3.9"
+dependencies = [
+    "pydantic>=2.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["xssentials*"]
