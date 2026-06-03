@@ -1,7 +1,10 @@
 """D-Tools Cloud API client.
 
-Read-only V1. Layer 1 enforcement: _request raises NotImplementedError on
-any non-GET method. Layer 2 (gateway enforce_get_only) applies to dt_query.
+V2 — read + write. The D-Tools Cloud API exposes 8 write endpoints (clients,
+opportunities, product price/status/barcode, project metadata); change orders
+and quotes remain GET-only at the API itself. `_request` allows GET/POST/PUT;
+non-idempotent POSTs skip the network-retry loop to avoid double-create. The
+generic `dt_query` escape hatch stays GET-only via gateway `enforce_get_only`.
 
 Auth:
   - BASIC_AUTH: D-Tools shared Basic header literal (public constant, every
@@ -152,21 +155,30 @@ _response_logger = _ResponseLogger()
 # Core request
 # ---------------------------------------------------------------------------
 
-def _request(method: str, path: str, params: dict | None = None) -> Any:
+def _request(
+    method: str,
+    path: str,
+    params: dict | None = None,
+    body: Any = None,
+) -> Any:
     """Make a D-Tools Cloud API request.
 
-    Layer 1 read-only enforcement: raises NotImplementedError for any non-GET.
+    Supports GET (reads) and POST/PUT (writes). `body` is JSON-encoded and sent
+    with Content-Type: application/json. POST is treated as non-idempotent — its
+    network-retry loop is suppressed so a transient failure can't double-create.
     """
-    if method.upper() != "GET":
-        raise NotImplementedError(
-            "xssentials.dtools.cloud is read-only V1; non-GET methods not supported"
-        )
+    method = method.upper()
+    if method not in ("GET", "POST", "PUT"):
+        raise ValueError(f"Unsupported HTTP method for D-Tools client: {method!r}")
+    is_write = method != "GET"
 
     url = BASE_URL + path
     if params:
         clean = {k: v for k, v in params.items() if v is not None}
         if clean:
             url += "?" + urllib.parse.urlencode(clean, doseq=True)
+
+    data = json.dumps(body).encode("utf-8") if body is not None else None
 
     # 401-as-throttle tracking state (per-process; resets on process restart)
     auth_failures: list[float] = []
@@ -180,20 +192,24 @@ def _request(method: str, path: str, params: dict | None = None) -> Any:
             "X-API-Key": resolve_x_api_key(),
             "Accept": "application/json",
         }
+        if data is not None:
+            headers["Content-Type"] = "application/json"
 
         t0 = time.monotonic()
         try:
-            req = urllib.request.Request(url, method="GET", headers=headers)
+            req = urllib.request.Request(
+                url, data=data, method=method, headers=headers
+            )
             with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
                 elapsed_ms = (time.monotonic() - t0) * 1000
                 resp_headers = dict(resp.getheaders())
-                _response_logger.log("GET", path, resp.status, resp_headers, elapsed_ms)
-                body = resp.read()
-                return json.loads(body) if body else None
+                _response_logger.log(method, path, resp.status, resp_headers, elapsed_ms)
+                resp_body = resp.read()
+                return json.loads(resp_body) if resp_body else None
 
         except urllib.error.HTTPError as e:
             elapsed_ms = (time.monotonic() - t0) * 1000
-            _response_logger.log("GET", path, e.code, dict(e.headers), elapsed_ms)
+            _response_logger.log(method, path, e.code, dict(e.headers), elapsed_ms)
 
             if e.code == 401:
                 now = time.time()
@@ -240,13 +256,20 @@ def _request(method: str, path: str, params: dict | None = None) -> Any:
 
         except urllib.error.URLError as e:
             elapsed_ms = (time.monotonic() - t0) * 1000
+            # POST is non-idempotent: a network failure may have landed the
+            # create on the server. Never auto-retry — surface it instead.
+            if method == "POST":
+                raise RuntimeError(
+                    f"D-Tools connection failed for POST {path} (not retried — "
+                    f"non-idempotent; verify whether the create landed): {e}"
+                ) from e
             wait = 2 ** attempt
             logger.warning("D-Tools URL error on %s (%s) — retrying in %ds", path, e.reason, wait)
             time.sleep(wait)
             attempt += 1
             if attempt >= 3:
                 raise RuntimeError(
-                    f"D-Tools connection failed after 3 attempts for GET {path}: {e}"
+                    f"D-Tools connection failed after 3 attempts for {method} {path}: {e}"
                 ) from e
             continue
 
@@ -300,3 +323,53 @@ def get_list(resource: str, **params: Any) -> list[dict]:
 def get_quotes_for_opportunity(opp_id: str, **params: Any) -> dict:
     """Quotes belonging to an Opportunity. Returns dict with quotes[] + totalQuotes."""
     return get_list("Quotes", opportunityId=opp_id, includeTotalCount=True, **params)
+
+
+# ---------------------------------------------------------------------------
+# Write API (V2)
+#
+# The D-Tools Cloud API's entire write surface is these 8 endpoints. Change
+# orders, quotes, line items, locations, and labor are NOT writable via the
+# API — they must be entered through the D-Tools UI.
+# ---------------------------------------------------------------------------
+
+def update_product_prices(items: list[dict]) -> Any:
+    """PUT /Products/UpdateProductPrices. Rows: {id, msrp, unitCost, unitPrice}."""
+    return _request("PUT", "/Products/UpdateProductPrices", body=items)
+
+
+def update_product_statuses(items: list[dict]) -> Any:
+    """PUT /Products/UpdateProductStatuses. Rows: {id, isDiscontinued, isActive}."""
+    return _request("PUT", "/Products/UpdateProductStatuses", body=items)
+
+
+def update_product_barcodes(items: list[dict]) -> Any:
+    """PUT /Products/UpdateProductBarcodes. Rows: {id, upcBarcode, eanBarcode, itfBarcode}."""
+    return _request("PUT", "/Products/UpdateProductBarcodes", body=items)
+
+
+def create_client(client: dict) -> Any:
+    """POST /Clients/CreateClient. Body: Client record."""
+    return _request("POST", "/Clients/CreateClient", body=client)
+
+
+def update_client(id: str, client: dict) -> Any:
+    """PUT /Clients/UpdateClient?id=<id>. Body: Client record."""
+    return _request("PUT", "/Clients/UpdateClient", params={"id": id}, body=client)
+
+
+def create_opportunity(opp: dict) -> Any:
+    """POST /Opportunities/CreateOpportunity. Body: NewOpportunity record."""
+    return _request("POST", "/Opportunities/CreateOpportunity", body=opp)
+
+
+def update_opportunity(id: str, opp: dict) -> Any:
+    """PUT /Opportunities/UpdateOpportunity?id=<id>. Body: UpdateOpportunity record."""
+    return _request(
+        "PUT", "/Opportunities/UpdateOpportunity", params={"id": id}, body=opp
+    )
+
+
+def update_project(id: str, project: dict) -> Any:
+    """PUT /Projects/UpdateProject?id=<id>. Body: UpdateProject (metadata only)."""
+    return _request("PUT", "/Projects/UpdateProject", params={"id": id}, body=project)
