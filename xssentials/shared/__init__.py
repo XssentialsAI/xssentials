@@ -5,4 +5,5 @@ Submodules:
   partial-result callouts, generic link helpers.
 - `validators`: stdio payload-size guard, GET-only enforcement.
 - `auth_helpers`: env-var resolvers for `op run`-injected credentials.
+- `paths`: shared log-directory resolution (honors `$DTOOLS_LOG_DIR`).
 """

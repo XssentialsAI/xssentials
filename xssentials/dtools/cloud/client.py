@@ -30,6 +30,7 @@ import urllib.request
 from typing import Any
 
 from xssentials.dtools.cloud.auth import DTAuthError, resolve_x_api_key
+from xssentials.shared.paths import dtools_log_dir
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +41,7 @@ BASIC_AUTH = "Basic RFRDbG91ZEFQSVVzZXI6MyNRdVkrMkR1QCV3Kk15JTU8Yi1aZzlV"
 BASE_URL = "https://dtcloudapi.d-tools.cloud/api/v1"
 
 TIMEOUT_SECONDS = 15
-LOG_PATH = os.path.expanduser(
-    "~/Pits_Of_Hathsin/dtools_cloud_mcp/dtools_responses.log"
-)
+LOG_PATH = os.path.join(dtools_log_dir(), "dtools_responses.log")
 LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
