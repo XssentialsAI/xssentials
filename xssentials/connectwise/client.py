@@ -177,3 +177,63 @@ def get_count(path: str, conditions: str | None = None) -> int:
     if isinstance(resp, dict) and "count" in resp:
         return int(resp["count"])
     raise RuntimeError(f"unexpected /count response shape: {type(resp).__name__}")
+
+
+# ---------------------------------------------------------------------------
+# Sanctioned write surface — member creation only.
+#
+# `_request` above stays GET-only (the read-only invariant). Writes go through
+# this separate function, hard-allowlisted to `/system/members` so enabling
+# member onboarding cannot accidentally open writes anywhere else in CW. No
+# auto-retry: a timed-out POST could double-create, so writes fail loud on the
+# first error and the caller decides.
+# ---------------------------------------------------------------------------
+
+WRITE_ALLOWLIST = ("/system/members",)
+
+
+def _path_allowed(path: str) -> bool:
+    return any(path == p or path.startswith(p + "/") for p in WRITE_ALLOWLIST)
+
+
+def _write_request(method: str, path: str, body: Any) -> Any:
+    if method not in ("POST", "PATCH"):
+        raise NotImplementedError(
+            f"_write_request supports POST/PATCH only; got {method!r}."
+        )
+    if not _path_allowed(path):
+        raise ValueError(
+            f"Write not allowed for path {path!r}. "
+            f"The write allowlist is: {', '.join(WRITE_ALLOWLIST)}."
+        )
+    url = _base_url() + path
+    headers = {**_headers(), "Content-Type": "application/json"}
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
+            raw = resp.read()
+            return json.loads(raw) if raw else None
+    except urllib.error.HTTPError as e:
+        detail = e.read()[:1000].decode(errors="replace")
+        if e.code == 401:
+            raise CWAuthError(f"401 Unauthorized on {method} {path}. Body: {detail}") from e
+        raise CWAPIError(f"HTTP {e.code} on {method} {path}: {detail}") from e
+    except urllib.error.URLError as e:
+        raise CWAPIError(f"Network error on {method} {path}: {e.reason}") from e
+
+
+def get_member(member_id: int, fields: str | None = None) -> dict:
+    """GET a single member by numeric id (CW reads `me` as id 0 — use the id)."""
+    return get_one(f"/system/members/{int(member_id)}", fields=fields)
+
+
+def create_member(payload: dict) -> dict:
+    """POST a new member. `payload` is the full create body (see member builder)."""
+    return _write_request("POST", "/system/members", payload)
+
+
+def patch_member(member_id: int, operations: list) -> dict:
+    """PATCH a member with a JSON-Patch op list, e.g.
+    [{"op": "replace", "path": "employeeIdentifer", "value": "E123"}]."""
+    return _write_request("PATCH", f"/system/members/{int(member_id)}", operations)
