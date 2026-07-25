@@ -3,8 +3,8 @@
 Internal Python client library for Xssentials' line-of-business APIs. It is the shared dependency
 behind the two MCP servers:
 
-- [`connectwise-mcp`](https://github.com/XssentialsAI/connectwise-mcp) — ConnectWise Manage tools
-- [`dtools-cloud-mcp`](https://github.com/XssentialsAI/dtools-cloud-mcp) — D-Tools Cloud tools
+- [`connectwise-mcp`](https://github.com/Xssentials/connectwise-mcp) — ConnectWise Manage tools
+- [`dtools-cloud-mcp`](https://github.com/Xssentials/dtools-cloud-mcp) — D-Tools Cloud tools
 
 You don't install this on its own — the MCP servers depend on it. The instructions below exist so
 their `pip install` can resolve `xssentials`.
